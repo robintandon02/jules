@@ -8,48 +8,58 @@ from src.indicators import get_all_levels
 from src.strategy import check_for_trade_signal, check_for_trailing_sl_update
 
 def get_backtest_inputs():
-    """Prompts the user for backtest parameters."""
+    """
+    Prompts the user for backtest parameters, including a start and end date.
+    """
     logging.info("="*50)
-    logging.info("Single-Week Backtester Setup")
+    logging.info("Custom Period Backtester Setup")
     logging.info("="*50)
 
     while True:
         try:
-            start_date_str = input("Enter the start date of the week to test (e.g., 2024-09-09): ")
+            start_date_str = input("Enter the Start Date for the backtest (YYYY-MM-DD): ")
             start_date = datetime.strptime(start_date_str, "%Y-%m-%d").date()
-            if start_date.weekday() != 0:
-                logging.warning("Warning: The date provided is not a Monday. The backtest will run for 5 days from this date.")
             break
         except ValueError:
             logging.error("Invalid date format. Please use YYYY-MM-DD.")
 
-    logging.info("Please provide the exact option symbols for the chosen week.")
-    ce_symbol = input(f"Enter the Call (CE) symbol (e.g., NSE:NIFTY2490925000CE): ")
-    pe_symbol = input(f"Enter the Put (PE) symbol (e.g., NSE:NIFTY2490925000PE): ")
+    while True:
+        try:
+            end_date_str = input("Enter the End Date for the backtest (YYYY-MM-DD): ")
+            end_date = datetime.strptime(end_date_str, "%Y-%m-%d").date()
+            if end_date < start_date:
+                logging.error("End Date cannot be before the Start Date.")
+                continue
+            break
+        except ValueError:
+            logging.error("Invalid date format. Please use YYYY-MM-DD.")
+
+    logging.info("Please provide the exact option symbols for the chosen period.")
+    ce_symbol = input(f"Enter the Call (CE) symbol: ")
+    pe_symbol = input(f"Enter the Put (PE) symbol: ")
 
     if not ce_symbol or not pe_symbol:
         raise ValueError("Execution stopped: Both CE and PE symbols must be provided.")
 
-    return start_date, ce_symbol, pe_symbol
+    return start_date, end_date, ce_symbol, pe_symbol
 
-def fetch_backtest_data(client, ce_symbol, pe_symbol, start_date):
-    """Fetches all historical data required for the weekly backtest."""
+def fetch_backtest_data(client, ce_symbol, pe_symbol, start_date, end_date):
+    """Fetches all historical data required for the backtest period."""
     logging.info("-" * 20 + " Fetching Historical Data " + "-" * 20)
-    end_date = start_date + timedelta(days=4)
     start_date_str, end_date_str = start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')
     logging.info(f"Data range for 1-min candles: {start_date_str} to {end_date_str}")
 
     ce_prev_day_data = get_last_trading_day_data(client, symbol=ce_symbol, base_date=start_date)
-    ce_weekly_candles = client.get_historical_data(ce_symbol, range_from=start_date_str, range_to=end_date_str)
+    ce_candles = client.get_historical_data(ce_symbol, range_from=start_date_str, range_to=end_date_str)
 
     pe_prev_day_data = get_last_trading_day_data(client, symbol=pe_symbol, base_date=start_date)
-    pe_weekly_candles = client.get_historical_data(pe_symbol, range_from=start_date_str, range_to=end_date_str)
+    pe_candles = client.get_historical_data(pe_symbol, range_from=start_date_str, range_to=end_date_str)
 
-    if ce_prev_day_data is None or pe_prev_day_data is None or ce_weekly_candles is None or pe_weekly_candles is None:
-        raise Exception("Failed to fetch all required historical data. Cannot proceed with backtest.")
+    if ce_prev_day_data is None or pe_prev_day_data is None or ce_candles is None or pe_candles is None or ce_candles.empty or pe_candles.empty:
+        raise Exception("Failed to fetch all required historical data for the given symbols and date range. Please check if the symbols are correct and data exists for the period.")
     logging.info("Successfully fetched all required historical data.")
 
-    return {'ce': {'prev_day': ce_prev_day_data, 'candles': ce_weekly_candles}, 'pe': {'prev_day': pe_prev_day_data, 'candles': pe_weekly_candles}}
+    return {'ce': {'prev_day': ce_prev_day_data, 'candles': ce_candles}, 'pe': {'prev_day': pe_prev_day_data, 'candles': pe_candles}}
 
 def run_simulation(backtest_data):
     """The core backtesting engine. Iterates through data and applies the strategy."""
@@ -77,14 +87,12 @@ def run_simulation(backtest_data):
         day_ce_candles = all_ce_candles[all_ce_candles.index.date == day_date.date()]
         day_pe_candles = all_pe_candles[all_pe_candles.index.date == day_date.date()]
 
-        # Combine and sort all candles for the day to process in chronological order
         day_candles = pd.concat([day_ce_candles.assign(symbol_type='CE'), day_pe_candles.assign(symbol_type='PE')]).sort_index()
 
         for timestamp, candle in day_candles.iterrows():
             symbol_type = candle['symbol_type']
             current_candle = candle.to_dict()
 
-            # Get all historical data up to the current candle for MA calculations
             hist_candles = all_ce_candles.loc[:timestamp] if symbol_type == 'CE' else all_pe_candles.loc[:timestamp]
             levels = get_all_levels(prev_day_map[symbol_type], hist_candles)
 
@@ -118,7 +126,6 @@ def generate_report(portfolio_results):
     pe_trades = portfolio_results['PE']['trades']
     all_trades = ce_trades + pe_trades
 
-    # Finalize any trades that are still open at the end of the week
     for trade in all_trades:
         if trade['status'] == 'OPEN':
             trade['pnl'] = 0
@@ -162,11 +169,11 @@ def run_backtest():
     """Main function to orchestrate the single-week backtest."""
     setup_logging()
     try:
-        start_date, ce_symbol, pe_symbol = get_backtest_inputs()
+        start_date, end_date, ce_symbol, pe_symbol = get_backtest_inputs()
         client = initialize_client()
         if not client: return
 
-        backtest_data = fetch_backtest_data(client, ce_symbol, pe_symbol, start_date)
+        backtest_data = fetch_backtest_data(client, ce_symbol, pe_symbol, start_date, end_date)
         portfolio_results = run_simulation(backtest_data)
         generate_report(portfolio_results)
 
