@@ -35,8 +35,9 @@ def get_backtest_inputs():
             logging.error("Invalid date format. Please use YYYY-MM-DD.")
 
     logging.info("Please provide the exact option symbols for the chosen period.")
-    ce_symbol = input(f"Enter the Call (CE) symbol: ")
-    pe_symbol = input(f"Enter the Put (PE) symbol: ")
+    # Use .strip() to remove any accidental leading/trailing whitespace from user input
+    ce_symbol = input(f"Enter the Call (CE) symbol: ").strip()
+    pe_symbol = input(f"Enter the Put (PE) symbol: ").strip()
 
     if not ce_symbol or not pe_symbol:
         raise ValueError("Execution stopped: Both CE and PE symbols must be provided.")
@@ -44,21 +45,32 @@ def get_backtest_inputs():
     return start_date, end_date, ce_symbol, pe_symbol
 
 def fetch_backtest_data(client, ce_symbol, pe_symbol, start_date, end_date):
-    """Fetches all historical data required for the backtest period."""
+    """
+    Fetches all historical data required for the backtest period.
+    It is resilient to missing previous day's data.
+    """
     logging.info("-" * 20 + " Fetching Historical Data " + "-" * 20)
     start_date_str, end_date_str = start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')
     logging.info(f"Data range for 1-min candles: {start_date_str} to {end_date_str}")
 
-    ce_prev_day_data = get_last_trading_day_data(client, symbol=ce_symbol, base_date=start_date)
+    # Fetch main candle data for the specified period first. This is mandatory.
     ce_candles = client.get_historical_data(ce_symbol, range_from=start_date_str, range_to=end_date_str)
-
-    pe_prev_day_data = get_last_trading_day_data(client, symbol=pe_symbol, base_date=start_date)
     pe_candles = client.get_historical_data(pe_symbol, range_from=start_date_str, range_to=end_date_str)
 
-    if ce_prev_day_data is None or pe_prev_day_data is None or ce_candles is None or pe_candles is None or ce_candles.empty or pe_candles.empty:
-        raise Exception("Failed to fetch all required historical data for the given symbols and date range. Please check if the symbols are correct and data exists for the period.")
-    logging.info("Successfully fetched all required historical data.")
+    # If the main data for the backtest period is missing, we cannot proceed.
+    if ce_candles is None or pe_candles is None or ce_candles.empty or pe_candles.empty:
+        raise Exception("Failed to fetch main historical data for the given symbols and date range. Please check if the symbols are correct and data exists for the period.")
 
+    # Fetch previous day's data, but treat it as optional. Do not crash if it's not found.
+    ce_prev_day_data = get_last_trading_day_data(client, symbol=ce_symbol, base_date=start_date)
+    if ce_prev_day_data is None:
+        logging.warning(f"Could not fetch previous day's data for {ce_symbol}. Levels based on Previous Day H/L/C will be unavailable for the first day.")
+
+    pe_prev_day_data = get_last_trading_day_data(client, symbol=pe_symbol, base_date=start_date)
+    if pe_prev_day_data is None:
+        logging.warning(f"Could not fetch previous day's data for {pe_symbol}. Levels based on Previous Day H/L/C will be unavailable for the first day.")
+
+    logging.info("Successfully fetched all available historical data.")
     return {'ce': {'prev_day': ce_prev_day_data, 'candles': ce_candles}, 'pe': {'prev_day': pe_prev_day_data, 'candles': pe_candles}}
 
 def run_simulation(backtest_data):

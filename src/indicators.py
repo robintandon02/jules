@@ -39,19 +39,26 @@ def calculate_ema(prices: pd.Series, period: int):
 def get_all_levels(previous_day_data, historical_candles_df):
     """
     Calculates and aggregates all required levels for the strategy.
+    Handles cases where previous_day_data may not be available.
 
-    :param previous_day_data: A dictionary with keys 'high', 'low', 'close'.
+    :param previous_day_data: An optional dictionary with keys 'high', 'low', 'close'.
     :param historical_candles_df: A pandas DataFrame with historical candle data.
                                   It must have a 'close' column.
     :return: A dictionary containing all calculated levels.
     """
+    pdh, pdl, pdc, camarilla_pivots = None, None, None, {}
 
-    # Static daily levels are derived directly from previous day's data
-    pdh = previous_day_data['high']
-    pdl = previous_day_data['low']
-    pdc = previous_day_data['close']
-
-    camarilla_pivots = calculate_camarilla_pivots(pdh, pdl, pdc)
+    # Static daily levels are derived from previous day's data, if available
+    if previous_day_data:
+        pdh = previous_day_data.get('high')
+        pdl = previous_day_data.get('low')
+        pdc = previous_day_data.get('close')
+        # Ensure all H/L/C values are present before calculating pivots
+        if all((pdh, pdl, pdc)):
+            camarilla_pivots = calculate_camarilla_pivots(pdh, pdl, pdc)
+        else:
+            # If any value is missing, invalidate all of them to be safe
+            pdh, pdl, pdc = None, None, None
 
     # Dynamic levels (moving averages) are calculated from historical candles
     close_prices = historical_candles_df['close']
@@ -67,24 +74,24 @@ def get_all_levels(previous_day_data, historical_candles_df):
         "ema200": ema200,
         "sma200": sma200,
         "ema21": ema21,
-        **camarilla_pivots  # Unpack the pivot dictionary into the main one
+        **camarilla_pivots
     }
 
     # The list of key levels for the strategy, excluding the 21 EMA which is a filter
-    # The order here doesn't matter as the strategy will check them dynamically
     key_levels_for_trade = {
-        'r4': camarilla_pivots['r4'],
-        'r3': camarilla_pivots['r3'],
+        'r4': camarilla_pivots.get('r4'),
+        'r3': camarilla_pivots.get('r3'),
         'pdh': pdh,
-        'p': camarilla_pivots['p'],
+        'p': camarilla_pivots.get('p'),
         'pdc': pdc,
-        's3': camarilla_pivots['s3'],
-        's4': camarilla_pivots['s4'],
+        's3': camarilla_pivots.get('s3'),
+        's4': camarilla_pivots.get('s4'),
         'pdl': pdl,
         'ma200_lower': min(ema200, sma200) if ema200 and sma200 else None,
         'ma200_higher': max(ema200, sma200) if ema200 and sma200 else None
     }
 
-    levels['key_levels'] = key_levels_for_trade
+    # IMPORTANT: Filter out any levels that are None, so the strategy doesn't act on them
+    levels['key_levels'] = {k: v for k, v in key_levels_for_trade.items() if v is not None}
 
     return levels
