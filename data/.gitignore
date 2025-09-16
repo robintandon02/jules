@@ -1,0 +1,5 @@
+# Ignore all downloaded data files
+*.csv
+
+# Keep this .gitignore file in the repository
+!.gitignore

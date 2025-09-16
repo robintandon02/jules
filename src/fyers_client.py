@@ -36,8 +36,7 @@ class FyersClient:
             "resolution": resolution,
             "date_format": "1",
             "range_from": range_from,
-            "range_to": range_to,
-            "cont_flag": "1"
+            "range_to": range_to
         }
 
         response = self.fyers.history(data=data)

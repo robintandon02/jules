@@ -1,6 +1,7 @@
 import logging
 import pandas as pd
 from datetime import datetime, timedelta
+import os
 
 # Import shared and core logic modules
 from src.utils import setup_logging, initialize_client, get_last_trading_day_data
@@ -47,21 +48,51 @@ def get_backtest_inputs():
 def fetch_backtest_data(client, ce_symbol, pe_symbol, start_date, end_date):
     """
     Fetches all historical data required for the backtest period.
-    It is resilient to missing previous day's data.
+    It prioritizes loading data from local CSV files if they exist,
+    falling back to the Fyers API otherwise.
     """
     logging.info("-" * 20 + " Fetching Historical Data " + "-" * 20)
     start_date_str, end_date_str = start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')
-    logging.info(f"Data range for 1-min candles: {start_date_str} to {end_date_str}")
 
-    # Fetch main candle data for the specified period first. This is mandatory.
-    ce_candles = client.get_historical_data(ce_symbol, range_from=start_date_str, range_to=end_date_str)
-    pe_candles = client.get_historical_data(pe_symbol, range_from=start_date_str, range_to=end_date_str)
+    data_dir = "data"
+    all_data = {}
 
-    # If the main data for the backtest period is missing, we cannot proceed.
+    # Loop through both symbols to load or fetch their data
+    for symbol in [ce_symbol, pe_symbol]:
+        safe_filename = symbol.replace(":", "_") + ".csv"
+        file_path = os.path.join(data_dir, safe_filename)
+
+        # Priority 1: Try to load from a local file
+        if os.path.exists(file_path):
+            logging.info(f"Local data found for {symbol}. Loading from {file_path}...")
+            try:
+                # Load data, ensuring the first column is the index and parsing it as dates
+                candles = pd.read_csv(file_path, index_col=0, parse_dates=True)
+                # Filter the dataframe to match the requested backtest date range
+                candles = candles.loc[start_date_str:end_date_str]
+                all_data[symbol] = candles
+                logging.info(f"Successfully loaded {len(candles)} candles for {symbol} from local file.")
+            except Exception as e:
+                logging.error(f"Failed to load or parse local file {file_path}: {e}", exc_info=True)
+                all_data[symbol] = None  # Mark as failed to trigger API fallback
+
+        # Priority 2: Fallback to API if local loading failed or file didn't exist
+        if symbol not in all_data or all_data[symbol] is None:
+            if symbol in all_data: # This means local loading failed
+                 logging.warning(f"Local file for {symbol} was corrupted or invalid. Falling back to API.")
+            else: # This means file did not exist
+                logging.warning(f"No local data found for {symbol}. Attempting to fetch from Fyers API...")
+
+            all_data[symbol] = client.get_historical_data(symbol, range_from=start_date_str, range_to=end_date_str)
+
+    ce_candles = all_data.get(ce_symbol)
+    pe_candles = all_data.get(pe_symbol)
+
+    # If the main data is missing (from both local and API), we cannot proceed.
     if ce_candles is None or pe_candles is None or ce_candles.empty or pe_candles.empty:
-        raise Exception("Failed to fetch main historical data for the given symbols and date range. Please check if the symbols are correct and data exists for the period.")
+        raise Exception("Failed to fetch main historical data for the given symbols from local files or API.")
 
-    # Fetch previous day's data, but treat it as optional. Do not crash if it's not found.
+    # The logic for fetching previous day's data remains the same (always from API for now)
     ce_prev_day_data = get_last_trading_day_data(client, symbol=ce_symbol, base_date=start_date)
     if ce_prev_day_data is None:
         logging.warning(f"Could not fetch previous day's data for {ce_symbol}. Levels based on Previous Day H/L/C will be unavailable for the first day.")
@@ -70,7 +101,7 @@ def fetch_backtest_data(client, ce_symbol, pe_symbol, start_date, end_date):
     if pe_prev_day_data is None:
         logging.warning(f"Could not fetch previous day's data for {pe_symbol}. Levels based on Previous Day H/L/C will be unavailable for the first day.")
 
-    logging.info("Successfully fetched all available historical data.")
+    logging.info("Successfully processed all required historical data.")
     return {'ce': {'prev_day': ce_prev_day_data, 'candles': ce_candles}, 'pe': {'prev_day': pe_prev_day_data, 'candles': pe_candles}}
 
 def run_simulation(backtest_data):
